@@ -5,7 +5,7 @@ This repository contains Ruby scripts to test and interpret `iogpu.wired_limit_m
 ## What is included
 
 - `gpu_limit_report_local.rb`: Runs a local sweep over multiple wired-limit values, samples memory metrics, and writes reports.
-- `interpret_gpu_limit_report.rb`: Re-ranks and explains an existing JSON or summary CSV report.
+- `poc/interpret_gpu_limit_report.rb`: Re-ranks and explains an existing JSON or summary CSV report.
 
 ## Requirements
 
@@ -35,7 +35,7 @@ The script writes timestamped outputs to the current directory (or `--output-dir
 ## Interpret an existing report
 
 ```bash
-ruby interpret_gpu_limit_report.rb --input 16gb-test-YYYYMMDD-HHMMSS.json
+ruby poc/interpret_gpu_limit_report.rb --input 16gb-test-YYYYMMDD-HHMMSS.json
 ```
 
 You can also pass a `*-summary.csv` file.

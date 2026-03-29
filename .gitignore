@@ -1,0 +1,28 @@
+# macOS
+.DS_Store
+
+# Bundler and gems
+/.bundle/
+/vendor/bundle/
+*.gem
+
+# Ruby runtime artifacts
+*.log
+*.tmp
+/.byebug_history
+/coverage/
+/tmp/
+
+# Editor artifacts
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Generated local reports at repository root
+/*-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9].json
+/*-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9].md
+/*-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]-samples.csv
+/*-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]-summary.csv
+/*-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]-samples-interpreted.md
+/*-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]-summary-interpreted.md
