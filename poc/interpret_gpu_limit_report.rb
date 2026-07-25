@@ -1,10 +1,11 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-require 'optparse'
 require 'csv'
 require 'json'
+require 'optparse'
 require 'pathname'
+require_relative '../gpu_limit_report_local'
 
 options = {
   input: nil,
@@ -16,7 +17,7 @@ OptionParser.new do |opts|
   opts.banner = <<~TXT
     Usage: ruby interpret_gpu_limit_report.rb --input REPORT.json
 
-    Accepts either the JSON report or the summary CSV produced by gpu_limit_report_local.rb.
+    Accepts the JSON report, summary CSV, or raw samples CSV produced by gpu_limit_report_local.rb.
   TXT
 
   opts.on('--input PATH', 'Path to .json report or -summary.csv') { |v| options[:input] = v }
@@ -28,117 +29,111 @@ abort('Missing --input') unless options[:input]
 input = Pathname.new(options[:input]).expand_path
 abort("File not found: #{input}") unless input.exist?
 
-def num(v)
-  return nil if v.nil? || v == ''
-  Float(v)
+def scalar(value)
+  return nil if value.nil? || value == ''
+  return value unless value.is_a?(String)
+
+  Integer(value)
 rescue ArgumentError
-  nil
+  begin
+    Float(value)
+  rescue ArgumentError
+    value
+  end
 end
 
 def load_from_json(path)
   payload = JSON.parse(path.read)
-  [payload['summaries'] || [], payload]
+  raise ArgumentError, 'JSON report does not contain a summaries array' unless payload['summaries'].is_a?(Array)
+
+  payload['summaries']
 end
 
-def load_from_summary_csv(path)
-  rows = CSV.read(path, headers: true).map(&:to_h)
-  [rows, nil]
+def symbolize_row(row)
+  row.to_h.to_h { |key, value| [key.to_sym, scalar(value)] }
 end
 
-def assessment_for(row)
-  out = []
-  swap = num(row['swap_used_mb_max'] || row[:swap_used_mb_max]) || 0
-  comp = num(row['compressed_mb_max'] || row[:compressed_mb_max]) || 0
-  free = num(row['free_mb_min'] || row[:free_mb_min]) || 0
-  pageouts = num(row['pageouts_delta'] || row[:pageouts_delta]) || 0
+def load_from_csv(path, analyzer)
+  table = CSV.read(path, headers: true)
+  headers = table.headers.compact
+  raise ArgumentError, 'CSV has no headers' if headers.empty?
 
-  out << 'swap-heavy' if swap >= 512
-  out << 'compression-heavy' if comp >= 1024
-  out << 'low-free-memory' if free <= 512
-  out << 'pageouts-rising' if pageouts > 0
-  out = ['stable'] if out.empty?
-  out.join(', ')
-end
+  rows = table.map { |row| symbolize_row(row) }
+  if headers.include?('timestamp')
+    raise ArgumentError, 'Samples CSV is missing limit_mb' unless headers.include?('limit_mb')
 
-def score_for(row)
-  swap = num(row['swap_used_mb_max'] || row[:swap_used_mb_max]) || 0
-  comp = num(row['compressed_mb_max'] || row[:compressed_mb_max]) || 0
-  free = num(row['free_mb_min'] || row[:free_mb_min]) || 0
-  pageouts = num(row['pageouts_delta'] || row[:pageouts_delta]) || 0
+    rows.group_by { |row| row[:limit_mb] }
+        .map { |limit_mb, samples| analyzer.summarize(Integer(limit_mb), samples) }
+  else
+    required = %w[limit_mb samples compressed_mb_max swap_used_mb_max]
+    missing = required - headers
+    raise ArgumentError, "Summary CSV is missing columns: #{missing.join(', ')}" if missing.any?
 
-  score = 100.0
-  score -= [swap / 32.0, 40].min
-  score -= [comp / 64.0, 30].min
-  score -= 15 if free < 512
-  score -= 10 if pageouts > 0
-  [[score, 0].max, 100].min.round(1)
-end
-
-def recommended(rows)
-  stable = rows.select do |r|
-    (num(r['swap_used_mb_max'] || r[:swap_used_mb_max]) || 0) < 256 &&
-      (num(r['compressed_mb_max'] || r[:compressed_mb_max]) || 0) < 768 &&
-      (num(r['free_mb_min'] || r[:free_mb_min]) || Float::INFINITY) > 512 &&
-      (num(r['pageouts_delta'] || r[:pageouts_delta]) || 0) <= 0
+    rows
   end
-
-  chosen = if stable.any?
-             stable.max_by { |r| num(r['limit_mb'] || r[:limit_mb]) || 0 }
-           else
-             rows.max_by { |r| [score_for(r), -(num(r['limit_mb'] || r[:limit_mb]) || 0)] }
-           end
-
-  return nil unless chosen
-
-  {
-    'limit_mb' => (num(chosen['limit_mb'] || chosen[:limit_mb]) || 0).to_i,
-    'assessment' => assessment_for(chosen),
-    'stability_score' => score_for(chosen),
-    'rationale' => stable.include?(chosen) ? 'highest stable tested limit' : 'best score among tested values'
-  }
 end
 
-rows, payload = if input.extname == '.json'
-                  load_from_json(input)
-                else
-                  load_from_summary_csv(input)
-                end
+def positive_growth(row, prefix)
+  recorded = row["#{prefix}_peak_delta".to_sym]
+  return recorded.to_f unless recorded.nil?
+
+  maximum = row["#{prefix}_max".to_sym]
+  baseline = row["#{prefix}_start".to_sym] || row["#{prefix}_min".to_sym]
+  return nil if maximum.nil? || baseline.nil?
+
+  [maximum.to_f - baseline.to_f, 0.0].max
+end
+
+def format_metric(value, precision = 1)
+  value.nil? ? 'n/a' : value.to_f.round(precision)
+end
+
+def format_limit(limit_mb)
+  limit_mb.zero? ? 'system default (`0`)' : "#{limit_mb} MB"
+end
+
+analyzer = SampleAnalyzer.new
+
+begin
+  rows = case input.extname.downcase
+         when '.json'
+           load_from_json(input).map { |row| symbolize_row(row) }
+         when '.csv'
+           load_from_csv(input, analyzer)
+         else
+           raise ArgumentError, "unsupported input type #{input.extname.inspect}; expected .json or .csv"
+         end
+rescue CSV::MalformedCSVError, JSON::ParserError, ArgumentError => error
+  abort("Cannot interpret #{input}: #{error.message}")
+end
 
 abort('No summary rows found') if rows.empty?
 
-normalized = rows.map do |r|
-  {
-    'limit_mb' => (num(r['limit_mb'] || r[:limit_mb]) || 0).to_i,
-    'swap_used_mb_max' => num(r['swap_used_mb_max'] || r[:swap_used_mb_max]) || 0,
-    'compressed_mb_max' => num(r['compressed_mb_max'] || r[:compressed_mb_max]) || 0,
-    'free_mb_min' => num(r['free_mb_min'] || r[:free_mb_min]) || 0,
-    'pageouts_delta' => num(r['pageouts_delta'] || r[:pageouts_delta]) || 0,
-    'stability_score' => score_for(r),
-    'assessment' => assessment_for(r)
-  }
-end.sort_by { |r| r['limit_mb'] }
+normalized = rows.map { |row| analyzer.assess(row) }.sort_by { |row| row[:limit_mb] }
 
-rec = recommended(normalized)
+rec = analyzer.recommendation(normalized)
 
 text = +"# Interpreted GPU wired limit report\n\n"
 text << "Source: `#{input.basename}`\n\n"
+text << "## Recommendation\n\n"
 if rec
-  text << "## Recommendation\n\n"
-  text << "Recommended default: **#{rec['limit_mb']} MB**  \n"
-  text << "Reason: #{rec['rationale']}  \n"
-  text << "Assessment: #{rec['assessment']}  \n"
-  text << "Stability score: #{rec['stability_score']}\n\n"
+  text << "Recommended candidate: **#{format_limit(rec[:limit_mb])}**  \n"
+  text << "Reason: #{rec[:rationale]}  \n"
+  text << "Assessment: #{rec[:assessment]}  \n"
+  text << "Stability score: #{rec[:stability_score]}\n\n"
+else
+  text << "No recommendation produced. The report must contain complete pressure metrics from a successful repeatable GPU workload.\n\n"
 end
 
 text << "## Limits ranked\n\n"
-text << "| limit_mb | score | assessment | swap_max_mb | compressed_max_mb | free_min_mb | pageouts_delta |\n"
-text << "|---:|---:|---|---:|---:|---:|---:|\n"
-normalized.each do |r|
-  text << "| #{r['limit_mb']} | #{r['stability_score']} | #{r['assessment']} | #{r['swap_used_mb_max'].round(1)} | #{r['compressed_mb_max'].round(1)} | #{r['free_mb_min'].round(1)} | #{r['pageouts_delta'].round} |\n"
+text << "| limit_mb | score | assessment | swap_growth_mb | compression_growth_mb | available_min_pct | swapouts_delta | workload |\n"
+text << "|---:|---:|---|---:|---:|---:|---:|---|\n"
+normalized.each do |row|
+  text << "| #{row[:limit_mb]} | #{row[:stability_score]} | #{row[:assessment]} | #{format_metric(positive_growth(row, 'swap_used_mb'))} | #{format_metric(positive_growth(row, 'compressed_mb'))} | #{format_metric(row[:available_percent_min], 0)} | #{format_metric(row[:swapouts_delta], 0)} | #{row[:workload_status] || 'not-recorded'} |\n"
 end
 
 text << "\n## Reading the result\n\n"
-text << "Use the highest value that stays boring: low swap, moderate compression, no pageout growth, and enough free memory that the machine still feels responsive. For your workload, this is more useful than maximizing GPU headroom.\n"
+text << "Use the highest value that stays boring: no new swapouts, modest compression growth, and healthy available memory while completing the same Metal workload. `iogpu.wired_limit_mb` only moves a GPU working-set ceiling; changing it does not allocate memory or create load.\n"
 
 if options[:write_md]
   md_name = options[:markdown_name] || "#{input.basename.sub_ext('')}-interpreted.md"
