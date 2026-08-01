@@ -4,6 +4,9 @@ This repository contains Ruby scripts to test and interpret `iogpu.wired_limit_m
 
 `iogpu.wired_limit_mb` changes the ceiling for memory that the GPU may wire. It does **not** reserve that memory or create GPU load. A useful sweep therefore has to launch the same real Metal workload once per tested value.
 
+Project overview, methodology, and related investigations:
+[marianposaceanu.com/projects/apple-silicon-gpu-wired-memory-benchmark](https://marianposaceanu.com/projects/apple-silicon-gpu-wired-memory-benchmark)
+
 ## What is included
 
 - `gpu_limit_report_local.rb`: Runs a local sweep, launches a workload once per limit, samples memory pressure, and writes reports.
